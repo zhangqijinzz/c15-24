@@ -20,11 +20,22 @@ export interface EnergyDocument {
   activeScenarioId: string;
 }
 
-export type ViewStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed';
+export type ViewStatus = 'loading' | 'ready' | 'editing' | 'error' | 'completed' | 'conflict';
 
 export interface Notice {
   kind: 'success' | 'error' | 'info';
   text: string;
+}
+
+/**
+ * 另一个标签页已经先写入时，本页暂存的待决冲突。
+ * base 为本页尚未落盘的版本，remote 为存储中检测到的新版本（可能为 null，如数据被清空）。
+ */
+export interface PendingConflict {
+  base: EnergyDocument;
+  baseRevision: number;
+  remote: EnergyDocument | null;
+  remoteRevision: number;
 }
 
 export interface EnergyEstimate {

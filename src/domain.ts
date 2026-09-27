@@ -1,4 +1,4 @@
-import type { EnergyDevice, EnergyEstimate, EnergyScenario, ScenarioSummary } from './types';
+import type { EnergyDevice, EnergyDocument, EnergyEstimate, EnergyScenario, ScenarioSummary } from './types';
 
 export const MAX_DAILY_HOURS = 24;
 
@@ -61,4 +61,27 @@ export function formatNumber(value: number, digits = 2): string {
 
 export function cloneScenario(source: EnergyScenario, id: string, name: string): EnergyScenario {
   return { ...source, id, name, createdAt: new Date().toISOString(), devices: source.devices.map((device) => ({ ...device, id: `${id}-${device.id}` })) };
+}
+
+export interface DocumentOutline {
+  scenarioCount: number;
+  totalDevices: number;
+  totalMonthlyKwh: number;
+  scenarioNames: string[];
+}
+
+/** 冲突弹窗中概览一份文档：方案数、设备数、各方案月度用电合计，帮助用户辨认版本。 */
+export function describeDocument(document: EnergyDocument): DocumentOutline {
+  return {
+    scenarioCount: document.scenarios.length,
+    totalDevices: document.scenarios.reduce((sum, scenario) => sum + scenario.devices.length, 0),
+    totalMonthlyKwh: document.scenarios.reduce(
+      (sum, scenario) => sum + scenario.devices.reduce(
+        (total, device) => total + (device.watts * device.dailyHours * scenario.daysPerMonth) / 1000,
+        0,
+      ),
+      0,
+    ),
+    scenarioNames: document.scenarios.map((scenario) => scenario.name),
+  };
 }
