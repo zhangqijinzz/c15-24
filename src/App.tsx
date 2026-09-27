@@ -16,7 +16,7 @@ function App() {
   return <div className="app-shell">
     <header className="topbar">
       <div className="brand"><span className="brand-mark">⌁</span><span>Energy<span>Lens</span></span></div>
-      <div className="topbar-right"><span className="save-state"><i /> {state.status === 'error' ? '需要注意' : '已自动保存'}</span><button className="help-button" aria-label="帮助">?</button></div>
+      <div className="topbar-right"><span className={`save-state${state.conflict ? ' warn' : ''}`}><i /> {state.conflict ? '待解决冲突' : state.status === 'error' ? '需要注意' : '已自动保存'}</span><button className="help-button" aria-label="帮助">?</button></div>
     </header>
 
     <main className="page-wrap">
@@ -24,6 +24,11 @@ function App() {
         <div><p className="eyebrow">家庭能耗推演器 <span>·</span> 轻量决策工具</p><h1>让每一度电<br /><span>都看得见。</span></h1><p className="hero-copy">把设备、使用习惯和电价放进来，马上看见<br className="desktop-only" />它们如何影响你的月度账单。</p></div>
         <div className="hero-spark"><span>本月预计用电</span><strong>{formatNumber(summary.total.monthlyKwh)} <small>kWh</small></strong><div className="sparkline"><i /><i /><i /><i /><i /><i /><i /></div></div>
       </section>
+
+      {state.conflict && <div className="conflict-banner" role="alert">
+        <div className="conflict-copy"><strong>其他标签页也修改了这份数据</strong><p>为避免互相覆盖，请选择保留哪一份；选择后所有打开的标签页会自动同步。</p></div>
+        <div className="conflict-actions"><button className="conflict-keep" onClick={() => vm.resolveConflict('local')}>保留本页改动</button><button className="conflict-use" onClick={() => vm.resolveConflict('remote')}>使用另一标签页的内容</button></div>
+      </div>}
 
       {state.notice && <div className={`notice ${state.notice.kind}`} role="status"><span>{state.notice.kind === 'error' ? '!' : '✓'}</span>{state.notice.text}</div>}
 

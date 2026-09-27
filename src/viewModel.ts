@@ -1,18 +1,23 @@
 import { cloneScenario, summarizeScenario, validateDevice, validateScenarioSettings } from './domain';
 import { findScenario, type EnergyRepository } from './repository';
-import type { EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
+import type { DocumentConflict, EnergyDevice, EnergyDocument, EnergyScenario, Notice, ViewStatus } from './types';
 
 export interface EnergyLensState {
   document: EnergyDocument | null;
   status: ViewStatus;
   notice: Notice | null;
+  /** 与其他标签页的改动撞在一起时非空，等待用户选择保留哪一份 */
+  conflict: DocumentConflict | null;
 }
 
 type Listener = (state: EnergyLensState) => void;
 
 export class EnergyLensViewModel {
-  private state: EnergyLensState = { document: null, status: 'loading', notice: null };
+  private state: EnergyLensState = { document: null, status: 'loading', notice: null, conflict: null };
   private readonly listeners = new Set<Listener>();
+  /** 最近一次与存储保持一致的文档；state.document 偏离它即说明本页有未落盘的改动 */
+  private persisted: EnergyDocument | null = null;
+  private unsubscribeExternal: (() => void) | null = null;
 
   constructor(private readonly repository: EnergyRepository) {}
 
@@ -25,11 +30,25 @@ export class EnergyLensViewModel {
 
   initialize(): void {
     try {
-      this.state = { document: this.repository.load(), status: 'ready', notice: null };
+      const document = this.repository.load();
+      this.persisted = document;
+      this.state = { document, status: 'ready', notice: null, conflict: null };
     } catch {
-      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' } };
+      this.state = { document: null, status: 'error', notice: { kind: 'error', text: '本地数据读取失败，请刷新重试' }, conflict: null };
+    }
+    this.unsubscribeExternal?.();
+    try {
+      this.unsubscribeExternal = this.repository.onExternalChange((remote) => this.handleExternalChange(remote));
+    } catch {
+      // 环境不支持跨页监听时退化为单页体验
+      this.unsubscribeExternal = null;
     }
     this.emit();
+  }
+
+  dispose(): void {
+    this.unsubscribeExternal?.();
+    this.unsubscribeExternal = null;
   }
 
   get activeScenario(): EnergyScenario | null {
@@ -102,6 +121,58 @@ export class EnergyLensViewModel {
     this.emit();
   }
 
+  /** 冲突待解决时由用户选择：保留本页改动，或采用另一标签页的内容 */
+  resolveConflict(choice: 'local' | 'remote'): void {
+    const conflict = this.state.conflict;
+    if (!conflict || !this.state.document) return;
+    if (choice === 'remote') {
+      this.persisted = conflict.remote;
+      this.state = { ...this.state, document: conflict.remote, status: 'editing', notice: { kind: 'info', text: '已改用其他标签页的内容，本页未保存的改动已放弃' }, conflict: null };
+      this.emit();
+      return;
+    }
+    try {
+      const outcome = this.repository.overwrite(this.state.document);
+      if (outcome.status === 'conflict') {
+        this.state = { ...this.state, conflict: { remote: outcome.current }, notice: { kind: 'error', text: '另一标签页刚又写入了新内容，请重新选择' } };
+      } else {
+        this.persisted = this.state.document;
+        this.state = { ...this.state, status: 'editing', notice: { kind: 'success', text: '已保留本页改动，其他标签页将自动同步' }, conflict: null };
+      }
+    } catch {
+      this.state = { ...this.state, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
+    }
+    this.emit();
+  }
+
+  private get hasUnsavedChanges(): boolean {
+    return this.state.document !== null && this.state.document !== this.persisted;
+  }
+
+  private handleExternalChange(remote: EnergyDocument): void {
+    if (this.state.conflict) {
+      // 冲突待解决期间：只刷新"另一份"的内容，不打扰本页编辑
+      this.state = { ...this.state, conflict: { remote } };
+      this.emit();
+      return;
+    }
+    if (this.hasUnsavedChanges) {
+      // 本页还有没落盘的改动：不能静默覆盖，交给用户选择
+      this.state = { ...this.state, conflict: { remote } };
+      this.emit();
+      return;
+    }
+    // 本页没有未保存改动：直接跟上最新数据，避免停在旧版本上继续写
+    this.persisted = remote;
+    this.state = {
+      ...this.state,
+      document: remote,
+      status: this.state.document ? this.state.status : 'ready',
+      notice: { kind: 'info', text: '检测到其他标签页的改动，已为你同步' },
+    };
+    this.emit();
+  }
+
   private commit(update: (scenario: EnergyScenario) => EnergyScenario, notice: string): void {
     if (!this.state.document) return;
     const document = { ...this.state.document, scenarios: this.state.document.scenarios.map((scenario) => scenario.id === this.state.document?.activeScenarioId ? update(scenario) : scenario) };
@@ -109,11 +180,23 @@ export class EnergyLensViewModel {
   }
 
   private persist(document: EnergyDocument, notice: string): void {
+    if (this.state.conflict) {
+      // 冲突未解决前不再写存储，避免反复覆盖或连环冲突提示；改动先留在本页内存中
+      this.state = { ...this.state, document, status: 'editing' };
+      this.emit();
+      return;
+    }
     try {
-      this.repository.save(document);
-      this.state = { document, status: 'editing', notice: { kind: 'success', text: notice } };
+      const outcome = this.repository.save(document);
+      if (outcome.status === 'conflict') {
+        // 别处已改过：保留本页改动，交给用户选择，绝不直接覆盖
+        this.state = { ...this.state, document, status: 'editing', notice: null, conflict: { remote: outcome.current } };
+      } else {
+        this.persisted = document;
+        this.state = { document, status: 'editing', notice: { kind: 'success', text: notice }, conflict: null };
+      }
     } catch {
-      this.state = { ...this.state, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
+      this.state = { ...this.state, document, status: 'error', notice: { kind: 'error', text: '保存失败，当前页面仍可继续编辑' } };
     }
     this.emit();
   }

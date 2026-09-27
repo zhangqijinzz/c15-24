@@ -8,7 +8,10 @@ export function useEnergyLens(): { vm: EnergyLensViewModel; state: EnergyLensSta
   useEffect(() => {
     const unsubscribe = vm.subscribe(setState);
     vm.initialize();
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      vm.dispose();
+    };
   }, [vm]);
   return { vm, state };
 }
